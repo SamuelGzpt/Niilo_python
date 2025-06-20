@@ -23,6 +23,7 @@ class ModernRedSocialApp:
         
         self.current_user_id = None
         self.open_windows = []  # Track open windows
+        self.query_history = []  # Historial de consultas SQL (solo BD)
         self.setup_styles()
         self.setup_main_interface()
         
@@ -1470,40 +1471,112 @@ class ModernRedSocialApp:
         # Lista de tablas
         tables = ['usuarios', 'publicaciones', 'me_gusta', 'comentarios', 'amistades', 'mensajes']
         
+        # --- PANEL DE CONSULTAS PREDEFINIDAS ---
+        queries_panel = tk.Frame(main_panel, bg='#2d2d44', width=500)
+        queries_panel.pack(side='right', fill='y', padx=(10, 0))
+        queries_panel.pack_propagate(False)
+        
+        tk.Label(queries_panel, text="📝 Consultas de ejemplo (haz clic y ejecuta)", font=('Segoe UI', 12, 'bold'),
+                 bg='#2d2d44', fg='#feca57').pack(pady=(15, 5))
+        
+        # Consultas predefinidas
+        predefined_queries = [
+            "SELECT * FROM usuarios WHERE id = 19;",
+            "SELECT u.* FROM usuarios u JOIN amistades a ON (u.id = a.usuario1_id OR u.id = a.usuario2_id) WHERE (a.usuario1_id = 1 OR a.usuario2_id = 1) AND a.estado = 'aceptada' AND u.id != 1;",
+            "SELECT * FROM usuarios WHERE nombre LIKE '%Ma%' OR apellido LIKE '%Ma%';",
+            "SELECT TOP 5 * FROM publicaciones WHERE activa = 1 ORDER BY fecha_publicacion DESC;",
+            "SELECT publicacion_id, COUNT(*) AS total_likes FROM me_gusta WHERE publicacion_id = 1 GROUP BY publicacion_id;",
+            "SELECT * FROM comentarios WHERE publicacion_id = 1 AND activo = 1;",
+            "SELECT * FROM usuarios WHERE DATEDIFF(YEAR, fecha_nacimiento, GETDATE()) > 30;",
+            "SELECT * FROM usuarios WHERE ubicacion = 'Barcelona';",
+            "SELECT CAST(fecha_publicacion AS DATE) AS dia, COUNT(*) AS total FROM publicaciones GROUP BY CAST(fecha_publicacion AS DATE);",
+            "SELECT COUNT(*) AS total_activos FROM usuarios WHERE activo = 1;"
+        ]
+        
+        queries_listbox = tk.Listbox(queries_panel, bg='#16213e', fg='white', font=('Consolas', 9),
+                                     width=70, height=18, border=0, highlightthickness=0, selectbackground='#4ecdc4')
+        for i, q in enumerate(predefined_queries, 1):
+            queries_listbox.insert(tk.END, f"{i}. {q}")
+        queries_listbox.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Área para mostrar y editar la consulta seleccionada
+        selected_query_text = tk.Text(queries_panel, height=4, font=('Consolas', 10), bg='#1a1a2e', fg='white',
+                                      wrap='word', border=0)
+        selected_query_text.pack(fill='x', padx=10, pady=(0, 10))
+        selected_query_text.config(state='normal')  # Ahora editable
+        
+        def on_query_select(event=None):
+            sel = queries_listbox.curselection()
+            if sel:
+                idx = sel[0]
+                query = predefined_queries[idx]
+                selected_query_text.delete(1.0, tk.END)
+                selected_query_text.insert(tk.END, query)
+        queries_listbox.bind('<<ListboxSelect>>', on_query_select)
+        
+        # Botón para ejecutar la consulta (toma el texto actual del widget)
+        def execute_selected_query():
+            query = selected_query_text.get(1.0, tk.END).strip()
+            if not query:
+                messagebox.showwarning("Consulta vacía", "Debes escribir o seleccionar una consulta para ejecutarla.")
+                return
+            # Ejecutar y mostrar resultado en el panel de datos
+            for item in data_tree.get_children():
+                data_tree.delete(item)
+            conn = self.connect_db()
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(query)
+                    if cursor.description:
+                        columns = [desc[0] for desc in cursor.description]
+                        data_tree.configure(columns=columns)
+                        data_tree.configure(show='headings')
+                        for col in columns:
+                            data_tree.heading(col, text=col)
+                            data_tree.column(col, width=120)
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            data_tree.insert('', 'end', values=tuple(row))
+                        info_label.config(text=f"Consulta ejecutada: {query[:60]}{'...' if len(query)>60 else ''} - {len(rows)} filas")
+                    else:
+                        info_label.config(text="Consulta ejecutada (sin resultados de tabla)")
+                    conn.close()
+                except Exception as e:
+                    messagebox.showerror("Error SQL", f"Error al ejecutar la consulta:\n{str(e)}")
+                    conn.close()
+        execute_btn = tk.Button(queries_panel, text="▶️ EJECUTAR CONSULTA", command=execute_selected_query,
+                               bg='#4ecdc4', fg='white', font=('Segoe UI', 11, 'bold'),
+                               border=0, cursor='hand2', pady=10)
+        execute_btn.pack(pady=(0, 15))
+        
+        # --- FIN PANEL CONSULTAS PREDEFINIDAS ---
+        
         def show_table_data(table_name):
             # Limpiar datos anteriores
             for item in data_tree.get_children():
                 data_tree.delete(item)
-            
             # Configurar tabla
             conn = self.connect_db()
             if conn:
                 cursor = conn.cursor()
-                
-                # Obtener estructura de la tabla
-                cursor.execute(f"SELECT TOP 1 * FROM {table_name}")
+                query1 = f"SELECT TOP 1 * FROM {table_name}"
+                cursor.execute(query1)
                 columns = [description[0] for description in cursor.description]
-                
-                # Configurar columnas del treeview
+                self.add_query_history(query1)
                 data_tree.configure(columns=columns)
                 data_tree.configure(show='headings')
-                
                 for col in columns:
                     data_tree.heading(col, text=col)
                     data_tree.column(col, width=100)
-                
-                # Obtener datos
-                cursor.execute(f"SELECT TOP 100 * FROM {table_name}")
+                query2 = f"SELECT TOP 100 * FROM {table_name}"
+                cursor.execute(query2)
                 rows = cursor.fetchall()
-                
+                self.add_query_history(query2)
                 for row in rows:
                     data_tree.insert('', 'end', values=tuple(row))
-                
                 conn.close()
-                
-                # Actualizar etiqueta de información
                 info_label.config(text=f"Tabla: {table_name.upper()} - {len(rows)} registros")
-        
         # Botones para cada tabla
         for table in tables:
             btn = tk.Button(table_panel, text=f"📋 {table.upper()}", 
@@ -1511,33 +1584,25 @@ class ModernRedSocialApp:
                           bg='#16213e', fg='white', font=('Segoe UI', 9),
                           border=0, cursor='hand2', pady=8)
             btn.pack(fill='x', padx=10, pady=2)
-        
         # Panel de datos
         data_panel = tk.Frame(main_panel, bg='#1a1a2e')
-        data_panel.pack(side='right', fill='both', expand=True)
-        
+        data_panel.pack(side='left', fill='both', expand=True)
         # Información
         info_frame = tk.Frame(data_panel, bg='#2d2d44')
         info_frame.pack(fill='x', pady=(0, 10))
-        
         info_label = tk.Label(info_frame, text="Selecciona una tabla para ver los datos", 
                              font=('Segoe UI', 11), bg='#2d2d44', fg='white')
         info_label.pack(pady=10)
-        
         # Treeview para datos
         data_tree = ttk.Treeview(data_panel, style="Modern.Treeview")
-        
         # Scrollbars
         v_scrollbar = ttk.Scrollbar(data_panel, orient="vertical", command=data_tree.yview)
         h_scrollbar = ttk.Scrollbar(data_panel, orient="horizontal", command=data_tree.xview)
-        
         data_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
-        
         # Pack scrollbars y treeview
         data_tree.pack(side="left", fill='both', expand=True)
         v_scrollbar.pack(side="right", fill="y")
         h_scrollbar.pack(side="bottom", fill="x")
-        
         # Mostrar primera tabla por defecto
         show_table_data('usuarios')
     
@@ -1799,6 +1864,12 @@ class ModernRedSocialApp:
         request_btn.pack(side='left', padx=5)
         
         search_tree.pack(fill='both', expand=True, padx=20, pady=10)
+    
+    def add_query_history(self, query):
+        """Agrega una consulta al historial, máximo 10"""
+        self.query_history.append(query)
+        if len(self.query_history) > 10:
+            self.query_history = self.query_history[-10:]
     
     def run(self):
         """Ejecutar la aplicación"""
